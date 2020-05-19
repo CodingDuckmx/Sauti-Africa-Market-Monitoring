@@ -112,36 +112,53 @@ def create_tables():
         cursor.execute(query_categories_table)
         connection.commit()
 
-        query_products_table = '''
-                            CREATE TABLE IF NOT EXISTS products (
-                                id SERIAL NOT NULL UNIQUE,
-                                products_name VARCHAR(99) UNIQUE,
-                                PRIMARY KEY(id, products_name)
-                            );
-        '''
+        # To be discused. ####
 
-        cursor.execute(query_products_table)
-        connection.commit()
+        # query_products_table = '''
+        #                     CREATE TABLE IF NOT EXISTS products (
+        #                         id SERIAL NOT NULL UNIQUE,
+        #                         product_name VARCHAR(99) UNIQUE,
+        #                         PRIMARY KEY(id, product_name)
+        #                     );
+        # '''
+
+        # cursor.execute(query_products_table)
+        # connection.commit()
 
 
         query_product_category_pair_table = '''
                             CREATE TABLE IF NOT EXISTS prod_cat_pair (
                                 id SERIAL NOT NULL,
-                                product_name VARCHAR(99) REFERENCES products(products_name),
-                                category_id INT REFERENCES categories(id)
+                                product_name VARCHAR(99) UNIQUE,
+                                category_id INT REFERENCES categories(id),
+                                PRIMARY KEY(product_name)
                             );
         '''
 
         cursor.execute(query_product_category_pair_table)
         connection.commit()
 
+        query_product_raw_info_table = '''
+                            CREATE TABLE IF NOT EXISTS product_raw_info (
+                                product_name VARCHAR(99) REFERENCES prod_cat_pair(product_name),
+                                market_id VARCHAR(99) REFERENCES markets(market_id),
+                                unit_scale VARCHAR(32),
+                                source_id INT REFERENCES sources(id),
+                                currency_code VARCHAR(3) REFERENCES currencies(currency_code),
+                                date_price DATE,
+                                retail_observed_price float4,
+                                wholesale_observed_price float4
+                            );
+        '''
+
+        cursor.execute(query_product_raw_info_table)
+        connection.commit()
 
 
-        query_product_info_table = '''
-                            CREATE TABLE IF NOT EXISTS product_info (
-                                product_id INT REFERENCES products(id),
-                                product_name VARCHAR(99) REFERENCES products(products_name),
-                                market_id INT REFERENCES markets(market_id),
+        query_product_clean_retail_info_table = '''
+                            CREATE TABLE IF NOT EXISTS product_clean_retail_info (
+                                product_name VARCHAR(99) REFERENCES prod_cat_pair(product_name),
+                                market_id VARCHAR(99) REFERENCES markets(market_id),
                                 source_id INT REFERENCES sources(id),
                                 currency_code VARCHAR(3) REFERENCES currencies(currency_code),
                                 date_price DATE,
@@ -156,6 +173,7 @@ def create_tables():
                                 forecasted_price_4 float4,
                                 forecasted_class_4 VARCHAR(9),
                                 used_model VARCHAR(99),
+                                date_run_model DATE,
                                 normal_band_limit float8,
                                 stress_band_limit float8,
                                 alert_band_limit float8,
@@ -163,7 +181,36 @@ def create_tables():
                             );
         '''
 
-        cursor.execute(query_product_info_table)
+        cursor.execute(query_product_clean_retail_info_table)
+        connection.commit()
+
+        query_product_clean_wholesale_info_table = '''
+                            CREATE TABLE IF NOT EXISTS product_clean_wholesale_info (
+                                product_name VARCHAR(99) REFERENCES prod_cat_pair(product_name),
+                                market_id VARCHAR(99) REFERENCES markets(market_id),
+                                source_id INT REFERENCES sources(id),
+                                currency_code VARCHAR(3) REFERENCES currencies(currency_code),
+                                date_price DATE,
+                                observed_price float4,
+                                observed_class VARCHAR(9),
+                                forecasted_price_1 float4,
+                                forecasted_class_1 VARCHAR(9),
+                                forecasted_price_2 float4,
+                                forecasted_class_2 VARCHAR(9),
+                                forecasted_price_3 float4,
+                                forecasted_class_3 VARCHAR(9),
+                                forecasted_price_4 float4,
+                                forecasted_class_4 VARCHAR(9),
+                                used_model VARCHAR(99),
+                                date_run_model DATE,
+                                normal_band_limit float8,
+                                stress_band_limit float8,
+                                alert_band_limit float8,
+                                stressness float8
+                            );
+        '''
+
+        cursor.execute(query_product_clean_wholesale_info_table)
         connection.commit()
 
         return 'Success'
@@ -566,47 +613,47 @@ def populate_basic_tables():
                 print(cat, 'already in categories table.')
 
 
-        for cat in list(products.keys()):
+        for cat in list(products.keys()):           
 
-            ################### TO BE CONTINUE...
-           
-            for market in markets[country_code]:
+            for product in products[cat]:
 
-                # This market id will prevent to duplicates in case
-                # there's a market with the same name in other country.
-                market_id = market + ' : ' + country_code
-
-                # Verfies if the market already exists.
+                # Verfies if the product already exists.
                 cursor.execute('''
-                            SELECT market_id
-                            FROM markets
-                            WHERE market_id = %s   
-                ''', (market_id,))
+                            SELECT product_name
+                            FROM prod_cat_pair
+                            WHERE product_name = %s   
+                ''', (product,))
 
-                market_exists = cursor.fetchall()
-
-                if not market_exists:
+                product_exists = cursor.fetchall()
+                
+                if not product_exists:
                     
-                    query_populate_markets = '''
-                                        INSERT INTO markets (
-                                           market_id,
-                                           market_name,
-                                           country_code 
+                    cursor.execute('''
+                                SELECT id
+                                FROM categories
+                                WHERE category_name = %s   
+                    ''', (cat,))
+
+                    category_id = cursor.fetchall()[0][0]
+
+                    query_populate_prod_cat_pair = '''
+                                        INSERT INTO prod_cat_pair (
+                                           product_name,
+                                           category_id 
                                         )
                                         VALUES (
-                                            %s,
                                             %s,
                                             %s
                                         );
                     '''
 
-                    cursor.execute(query_populate_markets,(market_id, market, country_code))
+                    cursor.execute(query_populate_prod_cat_pair,(product, category_id))
 
                     connection.commit()
 
                 else:
 
-                    print(market, 'already in markets table for the country', country_name, '.')
+                    print(product, 'already in products table.')
 
 
 
@@ -621,18 +668,150 @@ def populate_basic_tables():
             print('Connection closed.')
 
 
+def populate_product_raw_table():
+
+    '''  Pulls the raw data in puts it in our database.
+    '''
+    try:
+
+        # Stablishes connection with our db
 
 
 
-# conn = mysql.connector.connect(user=os.environ.get('sauti_db_user'), password=os.environ.get('sauti_db_password'),host=os.environ.get('sauti_db_host'), database=os.environ.get('sauti_db_name'))
+        connection = psycopg2.connect(user=os.environ.get('db_user'),
+                                    password=os.environ.get('db_password'),
+                                    host=os.environ.get('db_host'),
+                                    port=os.environ.get('db_port'),
+                                    database=os.environ.get('db_name'))
 
-# cur = conn.cursor(dictionary=True)
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        # Pulls the list of products.
+        cursor.execute('''
+                    SELECT product_name
+                    FROM prod_cat_pair
+        ''')
+
+        products_list = [x[0] for x in cursor.fetchall()]
+
+        for product in products_list:
+
+            # Stablishes connection with Sauti's database.
+
+            conn = mysql.connector.connect(user=os.environ.get('sauti_db_user'), password=os.environ.get('sauti_db_password'),host=os.environ.get('sauti_db_host'), database=os.environ.get('sauti_db_name'))
+
+            cur = conn.cursor(dictionary=True)
+
+            cur.execute('''
+                    SELECT *
+                    FROM platform_market_prices2
+                    WHERE product = %s
+            ''', (product,))
+
+            rows = cur.fetchall()
+
+            cur.close()
+            conn.close()
+
+            for row in rows:
+
+                market = row['market'].lower().capitalize()
+                country_code = row['country']
+                unit_scale = row['unit']
+                source = row['source']
+                currency = row['currency']
+                date_price = row['date'].strftime('%Y-%m-%d')
+                retail_observed_price = row['retail']
+                wholesale_observed_price = row['wholesale']
+
+                # Verfies the market already exists in our database
+                # and pull its market_id.
+
+                cursor.execute('''
+                        SELECT market_id
+                        FROM markets
+                        WHERE market_name = %s 
+                        AND country_code = %s
+                ''', (market,country_code))
+
+                # TO DO Pop an error if the market_id does not exist.
+
+                market_id = cursor.fetchall()[0][0]
+
+                cursor.execute('''
+                        SELECT id
+                        FROM sources
+                        WHERE source_name = %s
+                ''', (source,))
+
+                # TO DO Pop an error if the market_id does not exist.
+
+                source_id = cursor.fetchall()[0][0]
+
+                vector = (product,market_id,unit_scale,source_id, currency,date_price, retail_observed_price,wholesale_observed_price)
+
+                cursor.execute('''
+                        SELECT product_name
+                        FROM product_raw_info
+                        WHERE product_name = %s 
+                        AND market_id = %s 
+                        AND unit_scale = %s 
+                        AND source_id = %s 
+                        AND currency_code = %s 
+                        AND date_price = %s 
+                ''', (product,market_id,unit_scale,source_id, currency,date_price))                
+
+                result = cursor.fetchall()
+
+                if not result: 
+
+                    query_insert_product_info = '''
+                                        INSERT INTO product_raw_info (
+                                        product_name,
+                                        market_id,
+                                        unit_scale,
+                                        source_id,
+                                        currency_code,
+                                        date_price,
+                                        retail_observed_price,
+                                        wholesale_observed_price
+                                        )
+                                        VALUES (
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s
+                                        );
+                    '''
+
+                    cursor.execute(query_insert_product_info,vector)
+
+                    connection.commit()
+
+                else:
+
+                    pass
+
+                del result
 
 
+    except (Exception, psycopg2.Error) as error:
+        print('Error inserting or verifying the values.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+            print('Connection closed.')
 
 
-# cur.close()
-# conn.close()
 
 
 
@@ -701,5 +880,6 @@ def populate_basic_tables():
 
 
 if __name__ == "__main__":
-    create_tables()
-    populate_basic_tables()
+    # create_tables()
+    # populate_basic_tables()
+    populate_product_raw_table()
