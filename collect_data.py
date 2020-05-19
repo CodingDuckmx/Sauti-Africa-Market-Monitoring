@@ -296,88 +296,82 @@ def populate_basic_tables():
             currency_exists = cursor.fetchall()
 
             if not currency_exists:
+              
+                is_in_uganda = False
+                is_in_kenya = False
+                is_in_congo = False
+                is_in_burundi = False
+                is_in_tanzania = False
+                is_in_south_sudan = False
+                is_in_rwanda = False
+                is_in_malawi = False
 
-                for country in currencies[currency]:
+
+                if 'UGA' in currencies[currency]:
+
+                    is_in_uganda = True
+
+                else:
+
+                    pass
+                
+                if 'KEN' in currencies[currency]:
+
+                    is_in_kenya = True
+
+                else:
+
+                    pass
+
+
+                if 'DRC' in currencies[currency]:
+
+                    is_in_congo = True
+
+                else:
+
+                    pass
+
+                if 'BDI' in currencies[currency]:
+
+                    is_in_burundi = True
+
+                else:
+
+                    pass
+
+                if 'TZA' in currencies[currency]:
+
+                    is_in_tanzania = True
+
+                else:
+
+                    pass
+
+                if 'SSD' in currencies[currency]:
+
+                    is_in_south_sudan = True
+
+                else:
+
+                    pass
+
+                if 'RWA' in currencies[currency]:
+
+                    is_in_rwanda = True
+
+                else:
+
+                    pass
+
+                if 'MWI' in currencies[currency]:
+
+                    is_in_malawi = True
+
+                else:
+
+                    pass
                     
-                    is_in_uganda = False
-                    is_in_kenya = False
-                    is_in_congo = False
-                    is_in_burundi = False
-                    is_in_tanzania = False
-                    is_in_south_sudan = False
-                    is_in_rwanda = False
-                    is_in_malawi = False
-
-
-                    if country  == 'UGA':
-
-                        is_in_uganda = True
-
-                    else:
-
-                        pass
-                    
-                    if country  == 'KEN':
-
-                        is_in_kenya = True
-
-                    else:
-
-                        pass
-
-
-                    if country  == 'RDC':
-
-                        is_in_congo = True
-
-                    else:
-
-                        pass
-
-                    if country  == 'BDI':
-
-                        is_in_burundi = True
-
-                    else:
-
-                        pass
-
-                    if country  == 'TZA':
-
-                        is_in_tanzania = True
-
-                    else:
-
-                        pass
-
-                    if country  == 'SSD':
-
-                        is_in_south_sudan = True
-
-                    else:
-
-                        pass
-
-                    if country  == 'RWA':
-
-                        is_in_rwanda = True
-
-                    else:
-
-                        pass
-
-                    if country  == 'MWI':
-
-                        is_in_malawi = True
-
-                    else:
-
-                        pass
-
-                    print((currency,is_in_uganda,is_in_kenya,
-                                        is_in_congo,is_in_burundi,is_in_tanzania,is_in_south_sudan,
-                                        is_in_rwanda,is_in_malawi))
-                        
                 query_populate_currencies = '''
                                     INSERT INTO currencies (
                                     currency_code,
@@ -414,10 +408,210 @@ def populate_basic_tables():
                 print(currency, 'already in currencies table.')
 
 
+        for source in list(sources.keys()):
+
+            # Verfies if the currency already exists.
+            cursor.execute('''
+                        SELECT source_name
+                        FROM sources
+                        WHERE source_name = %s
+            ''', (source,))
+
+            source_exists = cursor.fetchall()
+
+            if not source_exists:
+              
+                is_in_uganda = False
+                is_in_kenya = False
+                is_in_congo = False
+                is_in_burundi = False
+                is_in_tanzania = False
+                is_in_south_sudan = False
+                is_in_rwanda = False
+                is_in_malawi = False
+
+
+                if 'UGA' in sources[source]:
+
+                    is_in_uganda = True
+
+                else:
+
+                    pass
+                
+                if 'KEN' in sources[source]:
+
+                    is_in_kenya = True
+
+                else:
+
+                    pass
+
+
+                if 'DRC' in sources[source]:
+
+                    is_in_congo = True
+
+                else:
+
+                    pass
+
+                if 'BDI' in sources[source]:
+
+                    is_in_burundi = True
+
+                else:
+
+                    pass
+
+                if 'TZA' in sources[source]:
+
+                    is_in_tanzania = True
+
+                else:
+
+                    pass
+
+                if 'SSD' in sources[source]:
+
+                    is_in_south_sudan = True
+
+                else:
+
+                    pass
+
+                if 'RWA' in sources[source]:
+
+                    is_in_rwanda = True
+
+                else:
+
+                    pass
+
+                if 'MWI' in sources[source]:
+
+                    is_in_malawi = True
+
+                else:
+
+                    pass
+                       
+                query_populate_sources = '''
+                                    INSERT INTO sources (
+                                    source_name,
+                                    is_in_uganda,
+                                    is_in_kenya,
+                                    is_in_congo,
+                                    is_in_burundi,
+                                    is_in_tanzania,
+                                    is_in_south_sudan,
+                                    is_in_rwanda,
+                                    is_in_malawi 
+                                    )
+                                    VALUES (
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s
+                                    );
+                '''
+
+                cursor.execute(query_populate_sources,(source,is_in_uganda,is_in_kenya,
+                                    is_in_congo,is_in_burundi,is_in_tanzania,is_in_south_sudan,
+                                    is_in_rwanda,is_in_malawi))
+
+                connection.commit()
+
+            else:
+
+                print(source, 'already in sources table.')
+
+
+        for cat in prod_categories:
+
+             # Verfies if the category already exists.
+
+            cursor.execute('''
+                        SELECT category_name
+                        FROM categories
+                        WHERE category_name = %s   
+            ''', (cat,))
+
+            category_exists = cursor.fetchall()
+
+
+
+            if not category_exists:
+
+                query_populate_categories = '''
+                                    INSERT INTO categories (
+                                       category_name 
+                                    )
+                                    VALUES (
+                                        %s
+                                    );
+                '''
+
+                cursor.execute(query_populate_categories,(cat,))
+
+                connection.commit()
+
+            else:
+
+                print(cat, 'already in categories table.')
+
+
+        for cat in list(products.keys()):
+
+            ################### TO BE CONTINUE...
+           
+            for market in markets[country_code]:
+
+                # This market id will prevent to duplicates in case
+                # there's a market with the same name in other country.
+                market_id = market + ' : ' + country_code
+
+                # Verfies if the market already exists.
+                cursor.execute('''
+                            SELECT market_id
+                            FROM markets
+                            WHERE market_id = %s   
+                ''', (market_id,))
+
+                market_exists = cursor.fetchall()
+
+                if not market_exists:
+                    
+                    query_populate_markets = '''
+                                        INSERT INTO markets (
+                                           market_id,
+                                           market_name,
+                                           country_code 
+                                        )
+                                        VALUES (
+                                            %s,
+                                            %s,
+                                            %s
+                                        );
+                    '''
+
+                    cursor.execute(query_populate_markets,(market_id, market, country_code))
+
+                    connection.commit()
+
+                else:
+
+                    print(market, 'already in markets table for the country', country_name, '.')
+
 
 
     except (Exception, psycopg2.Error) as error:
-        print('Error inserting or verifying the currency value.')
+        print('Error inserting or verifying the sources value.')
 
     finally:
 
