@@ -54,5 +54,3 @@ if __name__ == "__main__":
     # currency_code = 'UGX'
 
     # historic_ALPS_bands(product_name, market_id, source_id, currency_code)
-
-

@@ -83,21 +83,18 @@ def possible_maize_markets():
             connection.close()
 
 class Maize_clean_and_classify_class:
-    def __init__(self, df):
-        self.df = df
+    def __init__(self):
+        pass
         
-    
-    # We have to run the set columns function, which here does not apply. (Colab)
-    
-    def set_columns(df):
+    def set_columns(self,data):
 
-        df = pd.DataFrame(df)
-        df = df.rename(columns={0:'date_price',1:'unit_scale',2:'observed_price'})
+        data = pd.DataFrame(data)
+        data = data.rename(columns={0:'date_price',1:'unit_scale',2:'observed_price'})
 
-        return df
-
+        return data
     
-    def last_four_year_truncate(df):
+    
+    def last_four_year_truncate(self,df):
       
         start_point = df['date_price'].max() - datetime.timedelta(weeks=212)
 
@@ -105,7 +102,7 @@ class Maize_clean_and_classify_class:
 
         return l4y
     
-    def basic_cleanning(df):
+    def basic_cleanning(self,df):
         
         ''' 
         Removes duplicates in dates column. 
@@ -157,7 +154,7 @@ class Maize_clean_and_classify_class:
 
         return metric, cfd
     
-    def prepare_data_to_ALPS(df):
+    def prepare_data_to_ALPS(self,df):
     
         ''' 
 
@@ -200,8 +197,8 @@ class Maize_clean_and_classify_class:
 
         return cfd
     
-    def inmediate_forecast_ALPS_based(df):
-
+    def inmediate_forecast_ALPS_based(self,df):
+               
         forecasted_prices = []
 
         basesetyear = df.index.max().year - 2
@@ -209,61 +206,54 @@ class Maize_clean_and_classify_class:
         stop_0 = datetime.date(year=basesetyear,month=12,day=31)
 
         baseset = df.iloc[:len(df.loc[:stop_0]),:].copy()   
-        
-        try:
 
-            # For all the past months:
-            for i in range(len(df)-len(baseset)):
+        # For all the past months:
+        for i in range(len(df)-len(baseset)):
 
-                workset = df.iloc[:len(df.loc[:stop_0]) + i,:].copy()
+            workset = df.iloc[:len(df.loc[:stop_0]) + i,:].copy()
 
-                # What month are we?
-                
-                workset['month'] = workset.index.month
-
-                # Build dummy variables for the months.
-
-                dummies_df = pd.get_dummies(workset['month'])
-                dummies_df = dummies_df.T.reindex(range(1,13)).T.fillna(0)
-
-                workset = workset.join(dummies_df)
-                workset = workset.drop(labels=['month'], axis=1)
-                
-                features = workset.columns[1:]
-                target = workset.columns[0]
-
-                X = workset[features]
-                y = workset[target]
-
-                reg = LinearRegression()
-
-                reg = reg.fit(X,y)
-
-                next_month = df.iloc[len(df.loc[:stop_0]) + i,:].name
-
-                raw_next_month = [0 if j != next_month.month else 1 for j in range(1,13)]
-
-                next_month_array = np.array(raw_next_month).reshape(1,-1)
+            # What month are we?
             
-                forecasted_prices.append(reg.predict(next_month_array)[0])
+            workset['month'] = workset.index.month
 
-            # For the current month.
+            # Build dummy variables for the months.
 
-            raw_next_month = [0 if j != next_month.month + 1 else 1 for j in range(1,13)]
+            dummies_df = pd.get_dummies(workset['month'])
+            dummies_df = dummies_df.T.reindex(range(1,13)).T.fillna(0)
+
+            workset = workset.join(dummies_df)
+            workset = workset.drop(labels=['month'], axis=1)
+            
+            features = workset.columns[1:]
+            target = workset.columns[0]
+
+            X = workset[features]
+            y = workset[target]
+
+            reg = LinearRegression()
+                       
+            reg = reg.fit(X,y)
+
+            next_month = df.iloc[len(df.loc[:stop_0]) + i,:].name
+
+            raw_next_month = [0 if j != next_month.month else 1 for j in range(1,13)]
 
             next_month_array = np.array(raw_next_month).reshape(1,-1)
+        
+            forecasted_prices.append(reg.predict(next_month_array)[0])
+        
+        # For the current month.
 
-            forecasted_prices.append(reg.predict(next_month_array)[0])    
+        raw_next_month = [0 if j != next_month.month + 1 else 1 for j in range(1,13)]
 
-            return stop_0, forecasted_prices
+        next_month_array = np.array(raw_next_month).reshape(1,-1)
 
-        except:
+        forecasted_prices.append(reg.predict(next_month_array)[0])    
 
-            print('Market with errors.')
-
+        return stop_0, forecasted_prices
            
     
-    def build_bands_wfp_forecast(df, stop_0, forecasted_prices):
+    def build_bands_wfp_forecast(self,df, stop_0, forecasted_prices):
         
         errorstable = pd.DataFrame(index=pd.date_range(df.loc[stop_0:].index[0],datetime.date(df.index[-1].year,df.index[-1].month + 1, 1), freq='MS'),
                         columns=['observed_wholesale_price','forecast']) 
@@ -300,6 +290,29 @@ class Maize_clean_and_classify_class:
                 errorstable.iloc[date,6] =  errorstable.iloc[date,0] / errorstable.iloc[date,9]
 
         return errorstable
+
+    def run_class_colab(self,df):
+        
+        metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(df))
+        stop_0, forecasted_prices = self.inmediate_forecast_ALPS_based(self.prepare_data_to_ALPS(cleaned))
+        result = self.build_bands_wfp_forecast(self.prepare_data_to_ALPS(cleaned),stop_0,forecasted_prices)
+        
+        return metric, stop_0, result
+    
+    def run_class(self,data):
+        
+        df = self.set_columns(data)
+        metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(df))
+        try:
+            stop_0, forecasted_prices = self.inmediate_forecast_ALPS_based(self.prepare_data_to_ALPS(cleaned))
+            result = self.build_bands_wfp_forecast(self.prepare_data_to_ALPS(cleaned),stop_0,forecasted_prices)
+
+            return metric, stop_0, result
+        
+        except:
+
+            return None, None, None
+     
 
 
 
@@ -347,21 +360,14 @@ def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
 
     if data:
 
-        data = Maize_clean_and_classify_class.set_columns(data) 
+        maize_class = Maize_clean_and_classify_class()
+        # data = maize_class.set_columns(data)
+        # metric, cleaned = maize_class.basic_cleanning(maize_class.last_four_year_truncate(data))
+        # stop_0, forecasted_prices = maize_class.inmediate_forecast_ALPS_based(maize_class.prepare_data_to_ALPS(cleaned))
+        # wfp_forecast = maize_class.build_bands_wfp_forecast(maize_class.prepare_data_to_ALPS(cleaned),stop_0, forecasted_prices)
+        metric, stop_0, wfp_forecast = maize_class.run_class(data)
 
-        l4y = Maize_clean_and_classify_class.last_four_year_truncate(data)
-
-        metric, cleaned = Maize_clean_and_classify_class.basic_cleanning(l4y)
-
-        cfd = Maize_clean_and_classify_class.prepare_data_to_ALPS(cleaned)
-
-        try:
-
-            stop_0, forecasted_prices = Maize_clean_and_classify_class.inmediate_forecast_ALPS_based(cfd)
-
-        
-
-            wfp_forecast = Maize_clean_and_classify_class.build_bands_wfp_forecast(cfd,stop_0, forecasted_prices)
+        if metric:
 
 
             wfp_forecast = wfp_forecast.reset_index()
@@ -377,7 +383,6 @@ def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
                                         port=os.environ.get('aws_db_port'),
                                         database=os.environ.get('aws_db_name'))
 
-            
             # Create the cursor.
 
             cursor = connection.cursor()
@@ -435,10 +440,11 @@ def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
 
             connection.close()
         
-        except:
+        else:
 
             print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
             market_with_problems.append((product_name, market_id, source_id, currency_code))
+        #     pass
 
 
         return market_with_problems
