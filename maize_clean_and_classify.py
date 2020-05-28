@@ -6,182 +6,47 @@ from dotenv import load_dotenv, find_dotenv
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
-from draft_functions import *
+from functions_and_classes import *
 
 load_dotenv()
 
 # First I will work on wholesale prices only.
 
-def clean_and_classify(product_name, market_id, source_id, currency_code):
 
-    data = None
+def populate_pcwi_table():
 
-    try:
+    # What markets are vialable?
 
+    pctwo_retail, pctwo_wholesale = possible_maize_markets_to_label()
 
-        # Stablishes connection with our db.
+    # print('Wholesale markets:')
 
-        connection = psycopg2.connect(user=os.environ.get('eleph_db_user'),
-                                      password=os.environ.get('eleph_db_password'),
-                                      host=os.environ.get('eleph_db_host'),
-                                      port=os.environ.get('eleph_db_port'),
-                                      database=os.environ.get('eleph_db_name'))
+    # for i in range(len(pctwo_wholesale)):
 
-        
-        # Create the cursor.
+    #     product_name = pctwo_wholesale[i][1]
+    #     market_id = pctwo_wholesale[i][2]
+    #     source_id = pctwo_wholesale[i][3]
+    #     currency_code = pctwo_wholesale[i][4]
 
-        cursor = connection.cursor()
+    #     print(market_id)
 
-        cursor.execute('''
-                        SELECT date_price, unit_scale, wholesale_observed_price
-                        FROM maize_raw_info
-                        WHERE product_name = %s
-                        AND market_id = %s
-                        AND source_id = %s
-                        AND currency_code = %s
-        ''', (product_name, market_id, source_id, currency_code))
+    #     wholesale_clean_and_classify(product_name, market_id, source_id, currency_code)
 
-        data = cursor.fetchall()
+    print('Retail markets:')
 
-    except (Exception, psycopg2.Error) as error:
-        print('Error pulling the data.')
+    for i in range(len(pctwo_wholesale)):
 
-    finally:
+        product_name = pctwo_wholesale[i][1]
+        market_id = pctwo_wholesale[i][2]
+        source_id = pctwo_wholesale[i][3]
+        currency_code = pctwo_wholesale[i][4]
 
-        if (connection):
-            cursor.close()
-            connection.close()
+        print(market_id)
 
-
-    if data:
-        
-        data = set_columns(data)
-        metric, data = basic_cleanning(data)
-        data = limit_2019_and_later(data)
-
-        try:
-
-
-        # Stablishes connection with our db.
-
-            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
-                                        password=os.environ.get('aws_db_password'),
-                                        host=os.environ.get('aws_db_host'),
-                                        port=os.environ.get('aws_db_port'),
-                                        database=os.environ.get('aws_db_name'))
-
-            
-            # Create the cursor.
-
-            cursor = connection.cursor()
-
-            cursor.execute('''
-                            SELECT date_price, normal_band_limit, stress_band_limit, alert_band_limit
-                            FROM product_wholesale_bands
-                            WHERE product_name = %s
-                            AND market_id = %s
-                            AND source_id = %s
-                            AND currency_code = %s
-            ''', (product_name, market_id, source_id, currency_code))
-
-            bands = cursor.fetchall()
-
-            #### We are assuming all data is in the same metric.####
-
-
-        except (Exception, psycopg2.Error) as error:
-            print('Error pulling the bands.')
-
-        finally:
-
-            if (connection):
-                cursor.close()
-                connection.close()
-
-
-        bands = set_columns_bands_df(bands)
-
-        classified = assign_classification(data,bands)
-
-        classified = classified.values.tolist()
-        
-
-        # we will be dropping the classification values into the db.
-
-
-        try:
-
-
-            # Stablishes connection with our db.
-
-            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
-                                        password=os.environ.get('aws_db_password'),
-                                        host=os.environ.get('aws_db_host'),
-                                        port=os.environ.get('aws_db_port'),
-                                        database=os.environ.get('aws_db_name'))
-
-                
-                # Create the cursor.
-
-            cursor = connection.cursor()
-
-            for j in range(len(classified)):
-
-                vector = (product_name, market_id, source_id, currency_code, classified[j][0],
-                        classified[j][2],classified[j][3],classified[j][4])
-
-                print(vector)
-
-                query_drop_classification_labels = '''
-                                INSERT INTO product_clean_wholesale_info (
-                                product_name,
-                                market_id,
-                                source_id,
-                                currency_code,
-                                date_price,
-                                observed_price,
-                                observed_class,
-                                stressness
-                )
-                                VALUES(
-                                    %s,
-                                    %s,
-                                    %s,
-                                    %s,
-                                    %s,
-                                    %s,
-                                    %s,
-                                    %s
-                                );
-                '''
-
-                cursor.execute(query_drop_classification_labels,vector)
-
-                connection.commit()
-
-
-
-
-        except (Exception, psycopg2.Error) as error:
-            print('Error dropping the labels.')
-
-        finally:
-
-            if (connection):
-                cursor.close()
-                connection.close()
-
-
-
+        retail_clean_and_classify(product_name, market_id, source_id, currency_code)
 
 
 if __name__ == "__main__":
     
-    # for testing propourses:
-    product_name= 'Maize'
-    market_id = 'Eldoret : KEN'
-    source_id = '1'
-    currency_code = 'KES'
-    mode_price = 'wholesale_observed_price'
-
-    clean_and_classify(product_name, market_id, source_id, currency_code)
+    populate_pcwi_table()
+   

@@ -22,8 +22,6 @@ def populate_product_wholesale_bands():
     markets_with_problems = []
 
 
-    # First I will work on wholesale prices only.
-
     for i in range(len(pctwo_wholesale)):
 
         product_name = pctwo_wholesale[i][1]
@@ -33,10 +31,27 @@ def populate_product_wholesale_bands():
 
         print(market_id)
 
-        market_with_problems = historic_ALPS_bands(product_name, market_id, source_id, currency_code)
+        market_with_problems = wholesale_historic_ALPS_bands(product_name, market_id, source_id, currency_code)
 
         if market_with_problems:
             markets_with_problems.append(market_with_problems)
+
+    for i in range(len(pctwo_retail)):
+
+        product_name = pctwo_retail[i][1]
+        market_id = pctwo_retail[i][2]
+        source_id = pctwo_retail[i][3]
+        currency_code = pctwo_retail[i][4]
+
+        print(market_id)
+
+        market_with_problems = retail_historic_ALPS_bands(product_name, market_id, source_id, currency_code)
+
+        if market_with_problems:
+            markets_with_problems.append(market_with_problems)
+
+
+
 
 
     print(markets_with_problems)

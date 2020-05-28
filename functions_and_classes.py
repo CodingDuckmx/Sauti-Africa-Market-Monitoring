@@ -34,8 +34,6 @@ def possible_maize_markets():
 
         all_ws = pd.read_sql(query, con=connection)
 
-        connection.close()
-
         pctwo_retail = []
         pctwo_wholesale = []
         total_count = 1
@@ -81,6 +79,100 @@ def possible_maize_markets():
 
         if (connection):
             connection.close()
+
+
+def possible_maize_markets_to_label():
+
+
+    try:
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+        # Create the cursor.
+
+        query_0 = '''
+                SELECT *
+                FROM product_wholesale_bands
+                '''
+
+        ws_bands = pd.read_sql(query_0, con=connection)
+
+        query_1 = '''
+                SELECT *
+                FROM product_retail_bands
+                '''
+
+        rt_bands = pd.read_sql(query_1, con=connection)        
+
+
+        pctwo_wholesale = []
+        products = ['Maize']
+        useful_count = 1
+        df = ws_bands.copy()
+        prod_dict = {product:np.nan for product in products}
+        for product in products:
+            available_markets = list(set(df[df['product_name'] == product]['market_id']))
+            prod_dict[product] = {market:np.nan for market in available_markets}
+            for market in available_markets:
+                available_sources = list(set(df[(df['product_name'] == product) & (df['market_id'] == market)]['source_id']))
+                prod_dict[product][market] = {source:np.nan for source in available_sources}
+                for source in available_sources:
+                    available_currencies = list(set(df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source)]['currency_code']))
+                    prod_dict[product][market][source] = {currency:np.nan for currency in available_currencies}
+                    for currency in available_currencies:
+                        prod_dict[product][market][source][currency] = {'shape':np.nan, 'info':np.nan}
+                        
+                        prod_dict[product][market][source][currency]['shape'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)].shape
+                        prod_dict[product][market][source][currency]['info'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)]
+                        pctwo_wholesale.append(('product_'+ str(useful_count), product, market, source, currency))
+        
+        pctwo_retail = []
+        products = ['Maize']
+        df = rt_bands.copy()
+        prod_dict = {product:np.nan for product in products}
+        for product in products:
+            available_markets = list(set(df[df['product_name'] == product]['market_id']))
+            prod_dict[product] = {market:np.nan for market in available_markets}
+            for market in available_markets:
+                available_sources = list(set(df[(df['product_name'] == product) & (df['market_id'] == market)]['source_id']))
+                prod_dict[product][market] = {source:np.nan for source in available_sources}
+                for source in available_sources:
+                    available_currencies = list(set(df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source)]['currency_code']))
+                    prod_dict[product][market][source] = {currency:np.nan for currency in available_currencies}
+                    for currency in available_currencies:
+                        prod_dict[product][market][source][currency] = {'shape':np.nan, 'info':np.nan}
+                        
+                        prod_dict[product][market][source][currency]['shape'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)].shape
+                        prod_dict[product][market][source][currency]['info'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)]
+                        pctwo_retail.append(('product_'+ str(useful_count), product, market, source, currency))
+        
+        return pctwo_retail, pctwo_wholesale
+
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data or forming the dictionary.')
+
+    finally:
+
+        if (connection):
+            connection.close()
+
+
+
+
+
+
+
+
+
+
+
 
 class Maize_clean_and_classify_class:
     def __init__(self):
@@ -154,6 +246,21 @@ class Maize_clean_and_classify_class:
 
         return metric, cfd
     
+    def limit_2019_and_later(self,df):
+
+        ''' 
+        Limit the info to the 2020 or later and assigns its month, so the price could be compared with the bands.
+        '''
+
+
+        df = df[df['date_price'] > datetime.date(2018,12,31)]
+        df['date_price'] = df['date_price'].astype('datetime64')
+        df['month'] = [str(df.iloc[i,0])[:8] + '01' for i in range(len(df))]
+        df = df.reset_index(drop=True)
+
+        return df
+
+
     def prepare_data_to_ALPS(self,df):
     
         ''' 
@@ -256,7 +363,7 @@ class Maize_clean_and_classify_class:
     def build_bands_wfp_forecast(self,df, stop_0, forecasted_prices):
         
         errorstable = pd.DataFrame(index=pd.date_range(df.loc[stop_0:].index[0],datetime.date(df.index[-1].year,df.index[-1].month + 1, 1), freq='MS'),
-                        columns=['observed_wholesale_price','forecast']) 
+                        columns=['observed_price','forecast']) 
         errorstable.iloc[:,0] = None
         errorstable.iloc[:-1,0] =  [x[0] for x in df.iloc[len(df.loc[:stop_0]):,:].values.tolist()]
         errorstable.iloc[:,1] =  forecasted_prices
@@ -291,15 +398,59 @@ class Maize_clean_and_classify_class:
 
         return errorstable
 
-    def run_class_colab(self,df):
+    def set_columns_bands_df(self,bands):
+
+        bands= pd.DataFrame(bands)
+        bands = bands.rename(columns={0:'date_price',1:'normal_band_limit',2:'stress_band_limit',3:'alert_band_limit'})
+
+        return bands 
+
+    def assign_classification(self,data,bands):
+
+        results = data.copy()
+
+        results['Observed_class'] = None
+        results['Stressness'] = None
+
+        for i in range(len(results)):
+
+            bands_limits = bands[bands['date_price'] == datetime.date.fromisoformat(data.iloc[i,3])]
+
+            if results.iloc[i,2] < bands_limits.iloc[0,1]:
+
+                results.iloc[i,4] = 'Normal'
+                results.iloc[i,5] = results.iloc[i,2] / bands_limits.iloc[0,1]
+
+            elif results.iloc[i,2] < bands_limits.iloc[0,2]:
+
+                results.iloc[i,4] = 'Stress'
+                results.iloc[i,5] = results.iloc[i,2] / bands_limits.iloc[0,2]
+            
+            elif results.iloc[i,2] < bands_limits.iloc[0,3]:
+
+                results.iloc[i,4] = 'Alert'
+                results.iloc[i,5] = results.iloc[i,2] / bands_limits.iloc[0,3]
+
+            else:
+
+                results.iloc[i,4] = 'Crisis'
+                results.iloc[i,5] = results.iloc[i,2] / bands_limits.iloc[0,3]
+
+        results = results.drop(labels=['month'], axis=1)
+
+        return results
+
+
+
+    # def run_build_bands_colab(self,df):
         
-        metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(df))
-        stop_0, forecasted_prices = self.inmediate_forecast_ALPS_based(self.prepare_data_to_ALPS(cleaned))
-        result = self.build_bands_wfp_forecast(self.prepare_data_to_ALPS(cleaned),stop_0,forecasted_prices)
+    #     metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(df))
+    #     stop_0, forecasted_prices = self.inmediate_forecast_ALPS_based(self.prepare_data_to_ALPS(cleaned))
+    #     result = self.build_bands_wfp_forecast(self.prepare_data_to_ALPS(cleaned),stop_0,forecasted_prices)
         
-        return metric, stop_0, result
+    #     return metric, stop_0, result
     
-    def run_class(self,data):
+    def run_build_bands(self,data):
         
         df = self.set_columns(data)
         metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(df))
@@ -316,7 +467,7 @@ class Maize_clean_and_classify_class:
 
 
 
-def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
+def wholesale_historic_ALPS_bands(product_name, market_id, source_id, currency_code):
 
     data = None
     market_with_problems = []
@@ -365,7 +516,7 @@ def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
         # metric, cleaned = maize_class.basic_cleanning(maize_class.last_four_year_truncate(data))
         # stop_0, forecasted_prices = maize_class.inmediate_forecast_ALPS_based(maize_class.prepare_data_to_ALPS(cleaned))
         # wfp_forecast = maize_class.build_bands_wfp_forecast(maize_class.prepare_data_to_ALPS(cleaned),stop_0, forecasted_prices)
-        metric, stop_0, wfp_forecast = maize_class.run_class(data)
+        metric, stop_0, wfp_forecast = maize_class.run_build_bands(data)
 
         if metric:
 
@@ -467,3 +618,461 @@ def historic_ALPS_bands(product_name, market_id, source_id, currency_code):
 
 #     # pctwo_retail, pctwo_wholesale = possible_maize_markets()
 #     # print(pctwo_retail)
+
+
+
+def retail_historic_ALPS_bands(product_name, market_id, source_id, currency_code):
+
+    data = None
+    market_with_problems = []
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, retail_observed_price
+                        FROM maize_raw_info
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+
+        maize_class = Maize_clean_and_classify_class()
+        # data = maize_class.set_columns(data)
+        # metric, cleaned = maize_class.basic_cleanning(maize_class.last_four_year_truncate(data))
+        # stop_0, forecasted_prices = maize_class.inmediate_forecast_ALPS_based(maize_class.prepare_data_to_ALPS(cleaned))
+        # wfp_forecast = maize_class.build_bands_wfp_forecast(maize_class.prepare_data_to_ALPS(cleaned),stop_0, forecasted_prices)
+        metric, stop_0, wfp_forecast = maize_class.run_build_bands(data)
+
+        if metric:
+
+
+            wfp_forecast = wfp_forecast.reset_index()
+            
+            # try:
+
+                
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+
+            for row in wfp_forecast.values.tolist():
+                
+                date_price = str(row[0].strftime("%Y-%m-%d"))
+                date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
+                observed_price = row[1]
+                observed_class = row[6]
+                used_band_model =  'ALPS'
+                normal_band_limit = round(row[8],4) 
+                stress_band_limit = round(row[9],4)
+                alert_band_limit = round(row[10],4)
+
+                vector = (product_name,market_id,source_id,currency_code,date_price,
+                            observed_price,observed_class,used_band_model,date_run_model,
+                            normal_band_limit,stress_band_limit,alert_band_limit)
+
+                query_insert_results ='''
+                                    INSERT INTO product_retail_bands (
+                                    product_name,
+                                    market_id,
+                                    source_id,
+                                    currency_code,
+                                    date_price,
+                                    observed_price,
+                                    observed_class,
+                                    used_band_model,
+                                    date_run_model,
+                                    normal_band_limit,
+                                    stress_band_limit,
+                                    alert_band_limit
+                                    )
+                                    VALUES (
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s
+                                    );
+                '''
+
+                cursor.execute(query_insert_results, vector)
+
+                connection.commit()
+
+            connection.close()
+        
+        else:
+
+            print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
+            market_with_problems.append((product_name, market_id, source_id, currency_code))
+        #     pass
+
+
+        return market_with_problems
+
+
+def wholesale_clean_and_classify(product_name, market_id, source_id, currency_code):
+
+    data = None
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, wholesale_observed_price
+                        FROM maize_raw_info
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+        
+
+        maize_class = Maize_clean_and_classify_class()
+        data = maize_class.set_columns(data)
+        metric, cleaned = maize_class.basic_cleanning(data)
+        data = maize_class.limit_2019_and_later(cleaned)
+
+        try:
+
+
+        # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+            cursor.execute('''
+                            SELECT date_price, normal_band_limit, stress_band_limit, alert_band_limit
+                            FROM product_wholesale_bands
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+            ''', (product_name, market_id, source_id, currency_code))
+
+            bands = cursor.fetchall()
+
+            #### We are assuming all data is in the same metric.####
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error pulling the bands.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
+        bands = maize_class.set_columns_bands_df(bands)
+
+        classified = maize_class.assign_classification(data,bands)
+
+        classified = classified.values.tolist()
+        
+
+        # we will be dropping the classification values into the db.
+
+
+        try:
+
+
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+                
+                # Create the cursor.
+
+            cursor = connection.cursor()
+
+            for j in range(len(classified)):
+
+                vector = (product_name, market_id, source_id, currency_code, classified[j][0],
+                        classified[j][2],classified[j][3],classified[j][4])
+
+                query_drop_classification_labels = '''
+                                INSERT INTO product_clean_wholesale_info (
+                                product_name,
+                                market_id,
+                                source_id,
+                                currency_code,
+                                date_price,
+                                observed_price,
+                                observed_class,
+                                stressness
+                )
+                                VALUES(
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s
+                                );
+                '''
+
+                cursor.execute(query_drop_classification_labels,vector)
+
+                connection.commit()
+
+
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error dropping the labels.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
+
+def retail_clean_and_classify(product_name, market_id, source_id, currency_code):
+
+    data = None
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, retail_observed_price
+                        FROM maize_raw_info
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+        
+
+        maize_class = Maize_clean_and_classify_class()
+        data = maize_class.set_columns(data)
+        metric, cleaned = maize_class.basic_cleanning(data)
+        data = maize_class.limit_2019_and_later(cleaned)
+
+        try:
+
+
+        # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+            cursor.execute('''
+                            SELECT date_price, normal_band_limit, stress_band_limit, alert_band_limit
+                            FROM product_retail_bands
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+            ''', (product_name, market_id, source_id, currency_code))
+
+            bands = cursor.fetchall()
+
+            #### We are assuming all data is in the same metric.####
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error pulling the bands.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
+        bands = maize_class.set_columns_bands_df(bands)
+
+        classified = maize_class.assign_classification(data,bands)
+
+        classified = classified.values.tolist()
+        
+
+        # we will be dropping the classification values into the db.
+
+
+        try:
+
+
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+                
+                # Create the cursor.
+
+            cursor = connection.cursor()
+
+            for j in range(len(classified)):
+
+                vector = (product_name, market_id, source_id, currency_code, classified[j][0],
+                        classified[j][2],classified[j][3],classified[j][4])
+
+                query_drop_classification_labels = '''
+                                INSERT INTO product_clean_retail_info (
+                                product_name,
+                                market_id,
+                                source_id,
+                                currency_code,
+                                date_price,
+                                observed_price,
+                                observed_class,
+                                stressness
+                )
+                                VALUES(
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s
+                                );
+                '''
+
+                cursor.execute(query_drop_classification_labels,vector)
+
+                connection.commit()
+
+
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error dropping the labels.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
