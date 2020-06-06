@@ -1,3 +1,4 @@
+import copy
 import datetime
 import numpy as np
 import os
@@ -7,6 +8,7 @@ import psycopg2
 from dotenv import load_dotenv, find_dotenv
 from scipy import stats
 from sklearn.linear_model import LinearRegression
+from sqlalchemy import create_engine
 
 load_dotenv()
 
@@ -87,7 +89,17 @@ class Clean_and_classify_class:
                 selected_indices = list(cfd[cfd.iloc[:,-1] > Q95].index)
                 for i in selected_indices:
                     cfd.iloc[i,-1] = cfd.iloc[i,-1] / 10
-                    
+
+            # Drop typos we can't solve.
+            
+            Q01 = cfd.iloc[:,-1].quantile(.1)
+            
+            if cfd.describe().T['min'].values[0] < Q01:              
+
+                drop_index = list(cfd[cfd.iloc[:,-1] < Q01].index)
+
+                cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)       
+
     
             # Drop outliers.
 
@@ -345,3 +357,570 @@ class Clean_and_classify_class:
         except:
 
             return None, None, None, None
+
+def possible_product_market_pairs():
+    '''
+    Pulls the data from the table raw_table and stablishes a set of product/market pair
+    might be worth to work with.
+    It makes a dictionary with dataframes for all combination possibles and also returns a list
+    of the 'worth ones' to build the stress bands.
+    '''
+
+    try:
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        query = '''
+                SELECT *
+                FROM raw_table
+                '''
+
+        all_ws = pd.read_sql(query, con=connection)
+
+        # Pull the list of available products.
+
+        query_products = '''
+                        SELECT product_name
+                        FROM products
+        '''
+
+        cursor.execute(query_products)
+
+        product_list = [product[0] for product in cursor.fetchall()]
+
+
+
+        
+        return pctwo_retail, pctwo_wholesale, descriptions_retail, descriptions_wholesale
+
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data or forming the dictionary.')
+
+    finally:
+
+        if (connection):
+            connection.close()
+
+
+def product_ws_hist_ALPS_bands(product_name, market_id, source_id, currency_code):
+    '''
+    Builds the wholesale historic ALPS bands.
+    '''
+
+    data = None
+    market_with_problems = []
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, wholesale_observed_price
+                        FROM raw_table
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+
+        # Clean, prepare the data, build  the ALPS bands.
+
+        clean_class = Clean_and_classify_class()
+
+        metric, stop_0, wfp_forecast, mse = clean_class.run_build_bands(data)
+
+        if metric:
+
+            # If the bands were built, this code will be run to drop the info in the db.
+
+            wfp_forecast = wfp_forecast.reset_index()
+            
+            # try:
+
+                
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+
+            for row in wfp_forecast.values.tolist():
+                
+                date_price = str(row[0].strftime("%Y-%m-%d"))
+                date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
+                observed_price = row[1]
+                observed_class = row[6]
+                used_band_model =  'ALPS (weak)'
+                normal_band_limit = round(row[8],4) 
+                stress_band_limit = round(row[9],4)
+                alert_band_limit = round(row[10],4)
+
+                vector = (product_name,market_id,source_id,currency_code,date_price,
+                            observed_price,observed_class,used_band_model,date_run_model,
+                            normal_band_limit,stress_band_limit,alert_band_limit)
+
+                query_insert_results ='''
+                                    INSERT INTO product_wholesale_bands (
+                                    product_name,
+                                    market_id,
+                                    source_id,
+                                    currency_code,
+                                    date_price,
+                                    observed_price,
+                                    observed_class,
+                                    used_band_model,
+                                    date_run_model,
+                                    normal_band_limit,
+                                    stress_band_limit,
+                                    alert_band_limit
+                                    )
+                                    VALUES (
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s
+                                    );
+                '''
+
+                cursor.execute(query_insert_results, vector)
+
+                connection.commit()
+
+            connection.close()
+        
+        else:
+
+            print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
+            market_with_problems.append((product_name, market_id, source_id, currency_code))
+
+
+        return market_with_problems
+
+
+
+def product_retail_historic_ALPS_bands(product_name, market_id, source_id, currency_code):
+    '''
+    Builds the retail historic ALPS bands.
+    '''
+
+    data = None
+    market_with_problems = []
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, retail_observed_price
+                        FROM product_raw_info
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+
+        # Clean, prepare the data, build  the ALPS bands.
+
+        maize_class = Maize_clean_and_classify_class()
+        # data = maize_class.set_columns(data)
+        # metric, cleaned = maize_class.basic_cleanning(maize_class.last_four_year_truncate(data))
+        # stop_0, forecasted_prices = maize_class.inmediate_forecast_ALPS_based(maize_class.prepare_data_to_ALPS(cleaned))
+        # wfp_forecast = maize_class.build_bands_wfp_forecast(maize_class.prepare_data_to_ALPS(cleaned),stop_0, forecasted_prices)
+        metric, stop_0, wfp_forecast = maize_class.run_build_bands(data)
+
+        if metric:
+
+            # If the bands were built, this code will be run to drop the info in the db.
+
+            wfp_forecast = wfp_forecast.reset_index()
+            
+            # try:
+
+                
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+
+            for row in wfp_forecast.values.tolist():
+                
+                date_price = str(row[0].strftime("%Y-%m-%d"))
+                date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
+                observed_price = row[1]
+                observed_class = row[6]
+                used_band_model =  'ALPS (weak)'
+                normal_band_limit = round(row[8],4) 
+                stress_band_limit = round(row[9],4)
+                alert_band_limit = round(row[10],4)
+
+                vector = (product_name,market_id,source_id,currency_code,date_price,
+                            observed_price,observed_class,used_band_model,date_run_model,
+                            normal_band_limit,stress_band_limit,alert_band_limit)
+
+                query_insert_results ='''
+                                    INSERT INTO product_retail_bands (
+                                    product_name,
+                                    market_id,
+                                    source_id,
+                                    currency_code,
+                                    date_price,
+                                    observed_price,
+                                    observed_class,
+                                    used_band_model,
+                                    date_run_model,
+                                    normal_band_limit,
+                                    stress_band_limit,
+                                    alert_band_limit
+                                    )
+                                    VALUES (
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s,
+                                        %s
+                                    );
+                '''
+
+                cursor.execute(query_insert_results, vector)
+
+                connection.commit()
+
+            connection.close()
+        
+        else:
+
+            print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
+            market_with_problems.append((product_name, market_id, source_id, currency_code))
+
+
+        return market_with_problems
+
+
+
+
+#########################################################
+
+################## Jing's Classes #######################
+
+#########################################################
+
+
+class dbConnect:
+    """connect to database for read and write table"""
+    def __init__(self, name='wholesale_observed_price'):
+        self.name = name
+        self.df = [] # create an empy dataframe
+    
+    def read_stakeholder_db(self):
+        """read data from specific table in stakeholder's db"""
+        db_URI = 'mysql+pymysql://' + os.environ.get('stakeholder_db_user') + ':' + \
+            os.environ.get('stakeholder_db_password') + '@' + os.environ.get('stakeholder_db_host') + '/' + os.environ.get('stakeholder_db_name')
+        engine = create_engine(db_URI)
+        conn = engine.connect()
+        tablename = "platform_market_id_prices2"
+        query_statement = "SELECT * FROM "+ tablename 
+        data = pd.read_sql(query_statement, con=conn)   
+        conn.close()     
+        return data
+
+    def read_raw_table(self):
+      """read the raw_table data from our db"""
+      db_URI = 'postgresql://' + os.environ.get('aws_db_user') + ':' + os.environ.get('aws_db_password') + '@' + os.environ.get('aws_db_host') + '/' + os.environ.get('aws_db_name')
+      engine = create_engine(db_URI)
+      conn = engine.connect()
+      tablename = "raw_table"
+      query_statement = "SELECT * FROM "+ tablename 
+      data = pd.read_sql(query_statement, con=conn)    
+      conn.close()
+      return data
+
+
+    def read_analytical_db(self, tablename):
+        """read AWS analytical db """
+        db_URI = 'postgresql://' + os.environ.get('aws_db_user') + ':' + os.environ.get('aws_db_password') + '@' + os.environ.get('aws_db_host') + '/' + os.environ.get('aws_db_name')
+        engine = create_engine(db_URI)
+        conn = engine.connect()
+        query_statement = "SELECT * FROM " + tablename 
+        data = pd.read_sql(query_statement, con=conn)
+        conn.close()
+        return data
+
+    def populate_analytical_db(self, df, tablename):
+        """populate AWS analytical db with df and tablename """
+        db_URI = 'postgresql://' + os.environ.get('aws_db_user') + ':' + os.environ.get('aws_db_password') + '@' + os.environ.get('aws_db_host') + '/' + os.environ.get('aws_db_name')
+        engine = create_engine(db_URI)
+        conn = engine.connect()
+        
+        df.to_sql(tablename, con=conn, if_exists='replace', index=False, chunksize=100)
+
+        conn.close()
+       
+    def migrate_analyticalDB(self):
+        """read/add newly added data only"""
+        pass #raw = read_stakeholderDB()
+
+
+class DataCleaning:
+    """ method to clean data, apply to the whole data set (mixed time series)"""
+    def __init__(self):
+        pass
+        
+    def read_data(self, data=None):
+        if data is None:
+            print("Warning: No data provided")
+        if (isinstance(data, pd.DataFrame) == False):
+            print( "Input should be a dataframe!")
+        else:
+            df = pd.DataFrame(data)
+            print('Data is fed to class object.')
+        return df
+              
+    def remove_zeros(self, data):
+        """clean all invalid entries
+        cost cannot be 0, replace zeros with NaN"""
+        df = data.copy()
+        cols = ['wholesale_observed_price', 'retail_observed_price']
+        
+        df[cols] = df[cols].replace({0: np.nan})
+        if np.prod(df['wholesale_observed_price'] != 0):
+            print('All zero values has been replaced with NaN successfully')
+        else:
+            print('Zero to NaN process not complete.')
+        return df    
+   
+
+    def convert_dtypes(self, data):
+        """change each column to desired data type"""
+        df = data.copy()
+        # # change date to datetime
+        # df['date_price'] = pd.to_datetime(df['date_price'])
+
+        # change num dtype to float
+        df['wholesale_observed_price'] = df['wholesale_observed_price'].astype('float')
+        df['retail_observed_price'] = df['retail_observed_price'].astype('float')
+      
+        # change text col to categorical
+        str_cols = ['market_id', 'product_name', 'currency_code']
+        for item in str_cols:
+            df[item] = df[item].astype('category')
+        
+        print('Data type converted. Numericals converted to float, date to datatime type, and non-numericals to category.')
+       
+        return df
+     
+
+class DataQualityCheck:
+    """contain methods for quality check for one time series"""
+    def __init__(self):
+        pass
+    
+    def read_data(self, data=None):
+        if data is None:
+            print("Warning: No data provided")
+        if (isinstance(data, pd.Series) == False) & (isinstance(data.index, pd.DatetimeIndex)):
+            print("Data needs to be pandas series with datetime index!")
+        else:
+            df = pd.Series(data)
+        return df
+        
+    def remove_duplicates(self, df):
+        """remove duplicated rows, keep the first"""
+        y = df.copy()
+        rows_rm = y.index.duplicated(keep='first')
+        if np.sum(rows_rm):
+            y = y[~rows_rm]
+        return y
+        
+    def remove_outliers(self, df):
+        """remove outliers from a series"""        
+        y = df.copy()
+        lower_bound, upper_bound = y.quantile(.05), y.quantile(.95)
+        
+        y = y[y.iloc[:, 0].between(lower_bound[0], upper_bound[0])]
+        return y
+
+    def day_by_day(self, df):
+        """construct time frame and create augumented time series"""
+        y = df.copy()
+        
+        START, END = y.index.min(), y.index.max()        
+        # construct a time frame from start to end
+        date_range = pd.date_range(start=START, end=END, freq='D')
+        time_df = pd.DataFrame([], index=date_range)
+        # this is time series framed in the complete day-by-day timeframe
+        y_t = time_df.merge(y, how='left', left_index=True, right_index=True)
+        return y_t
+
+    def generate_QC(self, df, figure_output=0):
+        """ 
+        Input:  y: time series with sorted time index
+        Output: time series data quality metrics
+            start, end, timeliness, data_length, completeness, duplicates, mode_D
+            start: start of time series
+            end: end of time seires
+            timeliness: gap between the end of time seires and today, days. 0 means sampling is up to today, 30 means the most recent data was sampled 30 days ago.
+            data_length: length of available data in terms of days
+            completeness: not NaN/total data in a complete day-by-day time frame, 0 means all data are not valid, 1 means data is completed on 
+            duplicates: number of data sampled on same date, 0: no duplicates, 10: 10 data were sampled on a same date
+            mode_D: the most frequent sampling interval in time series, days, this is important for determing forecast resolution
+        """
+        y = df.copy()
+        y1 = self.remove_duplicates(y)
+        y2 = self.remove_outliers(y)
+
+        if y2.empty:
+            # e.g., special case of two datapoint, all data will be considered outlier
+            y = y1
+        else:
+            y = y2
+            # construct time frame and create augumented time series
+        START, END = y.index.min(), y.index.max()
+        TIMELINESS = (datetime.date.today()-END).days
+        
+        # this is time series framed in the complete day-by-day timeframe
+        y_t = self.day_by_day(y) 
+        
+        # completeness
+        L = len(y_t)
+        L_nan = y_t.isnull().sum()
+        COMPLETENESS = (1-L_nan/L)[0]
+        COMPLETENESS = round(COMPLETENESS, 3)
+        DATA_LEN = L
+
+        if COMPLETENESS == 0 | DATA_LEN == 1:
+            # no data or 1 datum
+            DUPLICATES = np.nan
+            MODE_D = np.nan
+
+        else:
+            # some data exist
+            timediff = pd.DataFrame(np.diff(y.index.values), columns=['D'])
+            x = timediff['D'].value_counts()
+            x.index = x.index.astype(str)
+            # x is value counts of differences between all adjecent sampling dates for one time series
+
+            if x.empty:
+                # only one data available, keep row for future data addition
+                DUPLICATES = 0
+                MODE_D = 0
+
+            elif any(x.index == '0 days') | len(x) == 1:
+                # duplicates exists, and all data occur on the same date
+                DUPLICATES = x[0]
+                MODE_D = 0
+
+            elif any(x.index == '0 days') | len(x) > 1:
+                # duplicates exists and data not equally spaced
+                DUPLICATES = x[0]
+                MODE_D = x[~(x.index == '0 days')].index[0]
+
+            else:  # elif ('0 days' not in x.index):
+                # no duplication
+                DUPLICATES = 0
+                MODE_D = x.index[0]
+
+        # START = str(START.date())
+        # END = str(END.date())
+        QC_i = [START, END, TIMELINESS,
+                DATA_LEN, COMPLETENESS, DUPLICATES, MODE_D]
+
+        if figure_output == 1:
+            # a small plot indicating sampling scheme
+            ax = sns.heatmap(y_t.isnull(), cbar=False)
+            plt.show()
+
+        return QC_i
