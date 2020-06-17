@@ -8,6 +8,8 @@ import psycopg2
 from dotenv import load_dotenv, find_dotenv
 from scipy import stats
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.stattools import adfuller
 from sqlalchemy import create_engine
 
 load_dotenv()
@@ -16,24 +18,16 @@ class Clean_and_classify_class:
     def __init__(self):
         self.description = ''' This class groups the main functions that are used to clean, 
                                 prepare the data, build  the ALPS bands and also label the
-                                maize prices.'''
-          
-    def last_four_year_truncate(self,df):
-        ''' Trunks the data for the last four years'''
+                                product prices.'''
 
-        # Verify the date exists.
+    def set_columns(self,data):
+        '''  Builds a dataframe with the raw data comming from the db. '''
 
-        try:
+        data = pd.DataFrame(data)
+        data = data.rename(columns={0:'date_price',1:'unit_scale',2:'observed_price'})
 
-            start_point = df['date_price'].max() - datetime.timedelta(weeks=212)
+        return data
 
-            l4y = df[df['date_price'] >= start_point].copy()
-
-            return l4y
-
-        except:
-
-            return pd.DataFrame()
 
     def basic_cleanning(self,df):
         
@@ -85,12 +79,19 @@ class Clean_and_classify_class:
             
             if 9 <= cfd.describe().T['max'].values[0] / cfd.describe().T['75%'].values[0] <= 11:
                 
-                Q95 = cfd.quantile(0.95).values[0]
-                selected_indices = list(cfd[cfd.iloc[:,-1] > Q95].index)
+                Q99 = cfd.quantile(0.99).values[0]
+                selected_indices = list(cfd[cfd.iloc[:,-1] > Q99].index)
                 for i in selected_indices:
                     cfd.iloc[i,-1] = cfd.iloc[i,-1] / 10
-
+            
             # Drop typos we can't solve.
+            
+            drop_index = cfd[(cfd.iloc[:,-1].rolling(window=1, min_periods= 1).max() / cfd.iloc[:,-1].rolling(window=30, min_periods= 10).quantile(0.75) ) > 5].index
+            
+            cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)  
+            
+            # TODO the following not sure if they apport meaningful results, because the two lines before this are very aggresive. 
+
             
             Q01 = cfd.iloc[:,-1].quantile(.1)
             
@@ -98,8 +99,7 @@ class Clean_and_classify_class:
 
                 drop_index = list(cfd[cfd.iloc[:,-1] < Q01].index)
 
-                cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)       
-
+                cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)
     
             # Drop outliers.
 
@@ -121,8 +121,8 @@ class Clean_and_classify_class:
 
                 drop_index = list(np.where(z>5)[0])
 
-                cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)  
-
+                cfd = cfd.drop(labels=drop_index, axis=0).reset_index(drop=True)            
+                                
             return metric, cfd
     
     def limit_2019_and_later(self,df):
@@ -132,7 +132,7 @@ class Clean_and_classify_class:
         '''
 
 
-        df = df[df['date_price'] > datetime.date(2018,12,31)]
+        df = df[df['date_price'] > pd.to_datetime('2018-12-31')]
         df['date_price'] = df['date_price'].astype('datetime64')
         df['month'] = [str(df.iloc[i,0])[:8] + '01' for i in range(len(df))]
         df = df.reset_index(drop=True)
@@ -296,8 +296,8 @@ class Clean_and_classify_class:
         '''
 
         bands= pd.DataFrame(bands)
-        bands = bands.rename(columns={0:'date_price',1:'normal_band_limit',2:'stress_band_limit',3:'alert_band_limit'})
-
+        bands = bands.rename(columns={0:'date_price',1:'normal_band_limit',2:'stress_band_limit',3:'alert_band_limit', 4:'class_method'})
+        
         return bands 
 
     def assign_classification(self,data,bands):
@@ -310,6 +310,7 @@ class Clean_and_classify_class:
 
         results['Observed_class'] = None
         results['Stressness'] = None
+        results['class_method'] = bands.iloc[0,-1]
 
         for i in range(len(results)):
 
@@ -347,7 +348,7 @@ class Clean_and_classify_class:
         A method that runs in a line the methods required.
         '''
         
-        metric, cleaned = self.basic_cleanning(self.last_four_year_truncate(data))
+        metric, cleaned = self.basic_cleanning(data)
         try:
             stop_0, forecasted_prices = self.inmediate_forecast_ALPS_based(self.prepare_data_to_ALPS(cleaned))
             result, mae = self.build_bands_wfp_forecast(self.prepare_data_to_ALPS(cleaned),stop_0,forecasted_prices)
@@ -376,33 +377,59 @@ def possible_product_market_pairs():
                                         port=os.environ.get('aws_db_port'),
                                         database=os.environ.get('aws_db_name'))
 
-
-        # Create the cursor.
-
-        cursor = connection.cursor()
-
-        query = '''
+        query_retail = '''
                 SELECT *
-                FROM raw_table
+                FROM retail_stats
+                WHERE data_length > 730
+                AND max_date >= '2019-01-01'::date
+                AND std > 0
                 '''
 
-        all_ws = pd.read_sql(query, con=connection)
+        query_wholesale = '''
+                SELECT *
+                FROM wholesale_stats
+                WHERE data_length > 730
+                AND max_date >= '2019-01-01'::date
+                AND std > 0
+                '''
 
-        # Pull the list of available products.
+        retail_df = pd.read_sql(query_retail, con=connection)
+        retail_df = retail_df.drop(labels='index', axis=1)
 
-        query_products = '''
-                        SELECT product_name
-                        FROM products
-        '''
+        wholesale_df = pd.read_sql(query_wholesale, con=connection)
+        wholesale_df = wholesale_df.drop(labels='index', axis=1)
 
-        cursor.execute(query_products)
+        retail_df['stationary'] = None
+        for i in range(len(retail_df)):
+                if retail_df.iloc[i,-13] > retail_df.iloc[i,-17]:
+                    retail_df.iloc[i,-1] = True
+                else:
+                    retail_df.iloc[i,-1] = False
 
-        product_list = [product[0] for product in cursor.fetchall()]
+        strong_candidates_retail = retail_df[(retail_df['data_length'] > 365*3) & (retail_df['stationary'] == True)]
+        retail_df = retail_df.drop(labels=list(strong_candidates_retail.index), axis=0)
 
+        weak_candidates_retail = retail_df.copy()
 
+        wholesale_df['stationary'] = None
+        for i in range(len(wholesale_df)):
+                if wholesale_df.iloc[i,-13] > wholesale_df.iloc[i,-17]:
+                    wholesale_df.iloc[i,-1] = True
+                else:
+                    wholesale_df.iloc[i,-1] = False
 
-        
-        return pctwo_retail, pctwo_wholesale, descriptions_retail, descriptions_wholesale
+        strong_candidates_wholesale = wholesale_df[(wholesale_df['data_length'] > 365*3) & (wholesale_df['stationary'] == True)]
+        wholesale_df = wholesale_df.drop(labels=list(strong_candidates_wholesale.index), axis=0)
+
+        weak_candidates_wholesale = wholesale_df.copy()
+
+        strong_candidates_retail = strong_candidates_retail[['product_name','market_id','source_id','currency_code']].values.tolist()
+        weak_candidates_retail = weak_candidates_retail[['product_name','market_id','source_id','currency_code']].values.tolist()
+        strong_candidates_wholesale = strong_candidates_wholesale[['product_name','market_id','source_id','currency_code']].values.tolist()
+        weak_candidates_wholesale = weak_candidates_wholesale[['product_name','market_id','source_id','currency_code']].values.tolist()
+
+                
+        return strong_candidates_retail, weak_candidates_retail, strong_candidates_wholesale, weak_candidates_wholesale
 
 
     except (Exception, psycopg2.Error) as error:
@@ -414,9 +441,192 @@ def possible_product_market_pairs():
             connection.close()
 
 
-def product_ws_hist_ALPS_bands(product_name, market_id, source_id, currency_code):
+def product_ws_hist_ALPS_bands(product_name, market_id, source_id, currency_code,model_name):
     '''
     Builds the wholesale historic ALPS bands.
+    '''
+
+    data = None
+    market_with_problems = []
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, wholesale_observed_price
+                        FROM raw_table
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+    if data:
+
+        # Clean, prepare the data, build  the ALPS bands.
+
+        clean_class = Clean_and_classify_class()
+
+        metric, stop_0, wfp_forecast, mse = clean_class.run_build_bands(data)
+
+        if metric:
+
+            # If the bands were built, this code will be run to drop the info in the db.
+
+            wfp_forecast = wfp_forecast.reset_index()
+            
+            # try:
+
+                
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+
+            for row in wfp_forecast.values.tolist():
+                
+                date_price = str(row[0].strftime("%Y-%m-%d"))
+                date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
+                observed_price = row[1]
+                if observed_price:
+                    observed_price = round(row[1],4)
+                observed_class = row[6]
+                class_method =  model_name
+                normal_band_limit = round(row[8],4) 
+                stress_band_limit = round(row[9],4)
+                alert_band_limit = round(row[10],4)
+
+                vector = (product_name,market_id,source_id,currency_code,metric,date_price,
+                            observed_price,observed_class,class_method,date_run_model,
+                            normal_band_limit,stress_band_limit,alert_band_limit)
+
+                # try:
+
+                cursor.execute('''
+                                            DELETE FROM wholesale_bands
+                                            WHERE product_name = %s
+                                            AND market_id = %s
+                                            AND unit_scale = %s
+                                            AND source_id = %s
+                                            AND currency_code = %s
+                                            AND date_price = %s
+                                            AND observed_price IS NULL
+                            ''', (product_name, market_id,metric,source_id,currency_code,date_price))
+             
+                # except:
+                #     pass
+                
+                cursor.execute('''
+                                SELECT id
+                                FROM wholesale_bands
+                                WHERE product_name = %s
+                                AND market_id = %s
+                                AND source_id = %s
+                                AND currency_code = %s
+                                AND unit_scale = %s
+                                AND date_price = %s
+                                AND observed_price = %s
+                                AND observed_class = %s
+                                AND class_method = %s
+                                AND normal_band_limit = %s
+                                AND stress_band_limit = %s
+                                AND alert_band_limit = %s
+                            ''', (product_name,market_id,source_id,currency_code,metric,date_price,
+                            observed_price,observed_class,class_method,
+                            normal_band_limit,stress_band_limit,alert_band_limit))
+
+                result = cursor.fetchall()
+
+                print(result)
+
+                if not result:
+
+                    print(vector)
+
+                    query_insert_results ='''
+                                        INSERT INTO wholesale_bands (
+                                        product_name,
+                                        market_id,
+                                        source_id,
+                                        currency_code,
+                                        unit_scale,
+                                        date_price,
+                                        observed_price,
+                                        observed_class,
+                                        class_method,
+                                        date_run_model,
+                                        normal_band_limit,
+                                        stress_band_limit,
+                                        alert_band_limit
+                                        )
+                                        VALUES (
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s,
+                                            %s
+                                        );
+                    '''
+
+                    cursor.execute(query_insert_results, vector)
+
+                    connection.commit()
+
+            connection.close()
+        
+        else:
+
+            print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
+            market_with_problems.append((product_name, market_id, source_id, currency_code))
+
+
+        return market_with_problems
+
+
+
+def product_retail_historic_ALPS_bands(product_name, market_id, source_id, currency_code,model_name):
+    '''
+    Builds the retail historic ALPS bands.
     '''
 
     data = None
@@ -495,31 +705,33 @@ def product_ws_hist_ALPS_bands(product_name, market_id, source_id, currency_code
                 date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
                 observed_price = row[1]
                 observed_class = row[6]
-                used_band_model =  'ALPS (weak)'
+                used_band_model =  model_name
                 normal_band_limit = round(row[8],4) 
                 stress_band_limit = round(row[9],4)
                 alert_band_limit = round(row[10],4)
 
-                vector = (product_name,market_id,source_id,currency_code,date_price,
+                vector = (product_name,market_id,source_id,currency_code,metric,date_price,
                             observed_price,observed_class,used_band_model,date_run_model,
                             normal_band_limit,stress_band_limit,alert_band_limit)
 
                 query_insert_results ='''
-                                    INSERT INTO product_wholesale_bands (
+                                    INSERT INTO retail_bands (
                                     product_name,
                                     market_id,
                                     source_id,
                                     currency_code,
+                                    unit_scale,
                                     date_price,
                                     observed_price,
                                     observed_class,
-                                    used_band_model,
+                                    class_method,
                                     date_run_model,
                                     normal_band_limit,
                                     stress_band_limit,
                                     alert_band_limit
                                     )
                                     VALUES (
+                                        %s,
                                         %s,
                                         %s,
                                         %s,
@@ -550,14 +762,117 @@ def product_ws_hist_ALPS_bands(product_name, market_id, source_id, currency_code
         return market_with_problems
 
 
+def make_dictionaries_possible_dataframes():
 
-def product_retail_historic_ALPS_bands(product_name, market_id, source_id, currency_code):
+    connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                            password=os.environ.get('aws_db_password'),
+                            host=os.environ.get('aws_db_host'),
+                            port=os.environ.get('aws_db_port'),
+                            database=os.environ.get('aws_db_name'))
+
+    query = '''
+    SELECT *
+    FROM raw_table
     '''
-    Builds the retail historic ALPS bands.
+
+    pulled_info = pd.read_sql(query, con=connection)
+
+    pulled_info = pulled_info.drop(labels=['id'], axis=1)
+
+    connection.close()
+
+    product_list = list(set(pulled_info['product_name']))
+
+    df = pulled_info.copy()
+    product_market_pair = []
+    total_count = 1
+    prod_dict = {product:np.nan for product in product_list}
+    descriptions_retail = {i:np.nan for i in range(1,len(df)+1)}
+    descriptions_wholesale = {i:np.nan for i in range(1,len(df)+1)}
+    for product in product_list:
+        available_markets = list(set(df[df['product_name'] == product]['market_id']))
+        prod_dict[product] = {market:np.nan for market in available_markets}
+        for market in available_markets:
+            available_sources = list(set(df[(df['product_name'] == product) & (df['market_id'] == market)]['source_id']))
+            prod_dict[product][market] = {source:np.nan for source in available_sources}
+            for source in available_sources:
+                available_currencies = list(set(df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source)]['currency_code']))
+                prod_dict[product][market][source] = {currency:np.nan for currency in available_currencies}
+                for currency in available_currencies:
+                    prod_dict[product][market][source][currency] = {'retail_observed_price':np.nan, 'wholesale_observed_price':np.nan}
+                    prod_dict[product][market][source][currency]['retail_observed_price'] = {'shape':np.nan, 'info':np.nan}
+                    prod_dict[product][market][source][currency]['wholesale_observed_price'] = {'shape':np.nan, 'info':np.nan}
+
+                    prod_dict[product][market][source][currency]['retail_observed_price']['shape'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)][['date_price','unit_scale','retail_observed_price']].shape
+                    prod_dict[product][market][source][currency]['retail_observed_price']['info'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)][['date_price','unit_scale','retail_observed_price']]
+                    product_market_pair.append((product, market, source, currency))
+
+                    temporal_df = prod_dict[product][market][source][currency]['retail_observed_price']['info'].copy()
+                    
+                    if len(temporal_df) > 20:
+                        result_adft = adfuller(temporal_df.iloc[:,-1])
+                        stationary_results = [round(result_adft[0],4), round(result_adft[1],4),result_adft[4]['1%'], result_adft[4]['5%'], result_adft[4]['10%'] ]
+                    else:
+                        stationary_results = [None, None, None, None, None]
+                    
+                    descriptions_retail[total_count] = [product,market, source, currency, temporal_df['date_price'].min(),temporal_df['date_price'].max(), stats.mode(np.diff(temporal_df['date_price'].sort_values()))[0]] +  temporal_df.describe().T.values.tolist() + stationary_results
+
+                                       
+                    del temporal_df
+                    
+                    prod_dict[product][market][source][currency]['wholesale_observed_price']['shape'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)][['date_price','unit_scale','wholesale_observed_price']].shape
+                    prod_dict[product][market][source][currency]['wholesale_observed_price']['info'] = df[(df['product_name'] == product) & (df['market_id'] == market) & (df['source_id'] == source) & (df['currency_code'] == currency)][['date_price','unit_scale','wholesale_observed_price']]
+
+                    temporal_df = prod_dict[product][market][source][currency]['wholesale_observed_price']['info'].copy()
+                    
+                    if len(temporal_df) > 20:
+                        result_adft = adfuller(temporal_df.iloc[:,-1])
+                        stationary_results = [round(result_adft[0],4), round(result_adft[1],4),result_adft[4]['1%'], result_adft[4]['5%'], result_adft[4]['10%'] ]
+                    else:
+                        stationary_results = [None, None, None, None, None]
+                    
+                    descriptions_wholesale[total_count] = [product,market, source, currency, temporal_df['date_price'].min(),temporal_df['date_price'].max(), stats.mode(np.diff(temporal_df['date_price'].sort_values()))[0]] + temporal_df.describe().T.values.tolist() + stationary_results
+
+                    total_count +=1
+                    
+                    del temporal_df
+
+    return product_market_pair, descriptions_retail, descriptions_wholesale
+
+def drop_stats_results_to_df(description_df,tablename):
+
+    df1 = pd.DataFrame.from_dict(description_df).T.dropna().rename(columns={0:'product_name',1:'market_id', 2: 'source_id', 3:'currency_code',4:'min_date',5:'max_date',6:'erase',7:'stats',8:'ADF Statistic',9:'p-value',10:'Critical value 0.01',11:'Critical value 0.05',12:'Critical value 0.1'}).reset_index(drop=True)
+    df2 = pd.DataFrame(df1['erase'].tolist(), index=df1.index).rename(columns={0:'mode_dispersion'})
+    df3 = pd.DataFrame(df1['stats'].tolist(), index=df1.index).rename(columns={0:'data_points', 1:' mean', 2:'std', 3:'min',4:'0.25',5:'0.50',6:'0.75',7:'max'})
+
+    summary_df = pd.concat([df1,df2,df3], axis=1).drop(labels=['erase','stats'], axis=1)
+    
+    summary_df['data_length'] = (summary_df['max_date'] - summary_df['min_date'] + datetime.timedelta(days=1)).dt.days
+    summary_df['completeness'] = summary_df['data_points'] / summary_df['data_length']
+    summary_df['mode_dispersion'] = summary_df['mode_dispersion'].fillna(pd.Timedelta(seconds=0))
+    summary_df['mode_dispersion'] = summary_df['mode_dispersion'].dt.days
+    summary_df = summary_df.replace({float('inf'):0, np.nan:0})
+    summary_df = summary_df.sort_values(by=['data_length','completeness','max_date'], ascending=False)
+
+
+    db_URI = 'postgresql://' + os.environ.get('aws_db_user') + ':' + os.environ.get('aws_db_password') + '@' + os.environ.get('aws_db_host') + '/' + os.environ.get('aws_db_name')
+    engine = create_engine(db_URI)
+    conn = engine.connect()
+
+    summary_df.to_sql(tablename, con=conn, if_exists='replace', chunksize=100)
+
+
+    conn.close()
+
+
+def product_retail_clean_and_classify(product_name, market_id, source_id, currency_code):
+
+    '''
+    Pulls the data from the raw and compare it with the bands, to classify
+    the stress level of the price.
     '''
 
     data = None
-    market_with_problems = []
 
     try:
 
@@ -577,7 +892,7 @@ def product_retail_historic_ALPS_bands(product_name, market_id, source_id, curre
 
         cursor.execute('''
                         SELECT date_price, unit_scale, retail_observed_price
-                        FROM product_raw_info
+                        FROM raw_table
                         WHERE product_name = %s
                         AND market_id = %s
                         AND source_id = %s
@@ -597,25 +912,76 @@ def product_retail_historic_ALPS_bands(product_name, market_id, source_id, curre
 
 
     if data:
+        
 
-        # Clean, prepare the data, build  the ALPS bands.
+        clean_class = Clean_and_classify_class()
+        data = clean_class.set_columns(data)
+        metric, cleaned = clean_class.basic_cleanning(data)
+        data = clean_class.limit_2019_and_later(cleaned)
 
-        maize_class = Maize_clean_and_classify_class()
-        # data = maize_class.set_columns(data)
-        # metric, cleaned = maize_class.basic_cleanning(maize_class.last_four_year_truncate(data))
-        # stop_0, forecasted_prices = maize_class.inmediate_forecast_ALPS_based(maize_class.prepare_data_to_ALPS(cleaned))
-        # wfp_forecast = maize_class.build_bands_wfp_forecast(maize_class.prepare_data_to_ALPS(cleaned),stop_0, forecasted_prices)
-        metric, stop_0, wfp_forecast = maize_class.run_build_bands(data)
+        try:
 
-        if metric:
 
-            # If the bands were built, this code will be run to drop the info in the db.
+        # Stablishes connection with our db.
 
-            wfp_forecast = wfp_forecast.reset_index()
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
             
+            # Create the cursor.
+
+            cursor = connection.cursor()
+
+            cursor.execute('''
+                            SELECT date_price, normal_band_limit, stress_band_limit, alert_band_limit, class_method
+                            FROM retail_bands
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+            ''', (product_name, market_id, source_id, currency_code))
+
+            bands = cursor.fetchall()
+
+            #### We are assuming all data is in the same metric.####
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error pulling the bands.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
+        bands = clean_class.set_columns_bands_df(bands)
+
+        classified = clean_class.assign_classification(data,bands)
+
+        classified['date_price'] = pd.to_datetime(classified['date_price'])
+        classified['Stressness'] = classified['Stressness'].astype(float)
+
+        classified = classified.values.tolist()
+        
+        for row in classified:
+
+            date_price = str(row[0].strftime("%Y-%m-%d"))
+            unit_scale = row[1]
+            observed_price = row[2]
+            observed_class = row[3]
+            stressness = row[4]
+            class_method = row[5]
+
+            # we will be dropping the classification values into the db.
+
             # try:
 
-                
+
             # Stablishes connection with our db.
 
             connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
@@ -624,71 +990,230 @@ def product_retail_historic_ALPS_bands(product_name, market_id, source_id, curre
                                         port=os.environ.get('aws_db_port'),
                                         database=os.environ.get('aws_db_name'))
 
+                
+                # Create the cursor.
+
+            cursor = connection.cursor()
+
+            cursor.execute('''
+                            SELECT id
+                            FROM retail_prices
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+                            AND unit_scale = %s
+                            AND date_price = %s
+                            AND observed_price = %s
+                        ''', (product_name,market_id,source_id,currency_code,unit_scale,
+                        date_price, observed_price))
+
+            row_id = cursor.fetchall()
+
+            if row_id:
+
+                row_id = row_id[0][0]
+
+                cursor.execute('''
+                                UPDATE retail_prices
+                                SET observed_class = %s,
+                                class_method = %s,
+                                stressness = %s
+                                WHERE id = %s
+                ''', (observed_class, class_method, stressness, row_id))
+
+                connection.commit()
+
+
+        connection.close()        
+
+ 
+
+
+
+        # except (Exception, psycopg2.Error) as error:
+        #     print('Error dropping the labels.')
+
+        # finally:
+
+        #     if (connection):
+        #         cursor.close()
+        #         connection.close()
+
+def product_wholesale_clean_and_classify(product_name, market_id, source_id, currency_code):
+
+    '''
+    Pulls the data from the raw and compare it with the bands, to classify
+    the stress level of the price.
+    '''
+
+    data = None
+
+    try:
+
+
+        # Stablishes connection with our db.
+
+        connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                      password=os.environ.get('aws_db_password'),
+                                      host=os.environ.get('aws_db_host'),
+                                      port=os.environ.get('aws_db_port'),
+                                      database=os.environ.get('aws_db_name'))
+
+        
+        # Create the cursor.
+
+        cursor = connection.cursor()
+
+        cursor.execute('''
+                        SELECT date_price, unit_scale, wholesale_observed_price
+                        FROM raw_table
+                        WHERE product_name = %s
+                        AND market_id = %s
+                        AND source_id = %s
+                        AND currency_code = %s
+        ''', (product_name, market_id, source_id, currency_code))
+
+        data = cursor.fetchall()
+
+    except (Exception, psycopg2.Error) as error:
+        print('Error pulling the data.')
+
+    finally:
+
+        if (connection):
+            cursor.close()
+            connection.close()
+
+
+    if data:
+        
+
+        clean_class = Clean_and_classify_class()
+        data = clean_class.set_columns(data)
+        _, cleaned = clean_class.basic_cleanning(data)
+        data = clean_class.limit_2019_and_later(cleaned)
+
+        try:
+
+
+        # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
+            
             # Create the cursor.
 
             cursor = connection.cursor()
 
+            cursor.execute('''
+                            SELECT date_price, normal_band_limit, stress_band_limit, alert_band_limit, class_method
+                            FROM wholesale_bands
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+            ''', (product_name, market_id, source_id, currency_code))
 
-            for row in wfp_forecast.values.tolist():
+            bands = cursor.fetchall()
+
+            #### We are assuming all data is in the same metric.####
+
+
+        except (Exception, psycopg2.Error) as error:
+            print('Error pulling the bands.')
+
+        finally:
+
+            if (connection):
+                cursor.close()
+                connection.close()
+
+
+        bands = clean_class.set_columns_bands_df(bands)
+
+        classified = clean_class.assign_classification(data,bands)
+
+        classified['date_price'] = pd.to_datetime(classified['date_price'])
+        classified['Stressness'] = classified['Stressness'].astype(float)
+
+        classified = classified.values.tolist()
+        
+        for row in classified:
+
+            date_price = str(row[0].strftime("%Y-%m-%d"))
+            unit_scale = row[1]
+            observed_price = row[2]
+            observed_class = row[3]
+            stressness = row[4]
+            class_method = row[5]
+
+            # we will be dropping the classification values into the db.
+
+            # try:
+
+
+            # Stablishes connection with our db.
+
+            connection = psycopg2.connect(user=os.environ.get('aws_db_user'),
+                                        password=os.environ.get('aws_db_password'),
+                                        host=os.environ.get('aws_db_host'),
+                                        port=os.environ.get('aws_db_port'),
+                                        database=os.environ.get('aws_db_name'))
+
                 
-                date_price = str(row[0].strftime("%Y-%m-%d"))
-                date_run_model = str(datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, datetime.datetime.today().day).strftime("%Y-%m-%d"))
-                observed_price = row[1]
-                observed_class = row[6]
-                used_band_model =  'ALPS (weak)'
-                normal_band_limit = round(row[8],4) 
-                stress_band_limit = round(row[9],4)
-                alert_band_limit = round(row[10],4)
+                # Create the cursor.
 
-                vector = (product_name,market_id,source_id,currency_code,date_price,
-                            observed_price,observed_class,used_band_model,date_run_model,
-                            normal_band_limit,stress_band_limit,alert_band_limit)
+            cursor = connection.cursor()
 
-                query_insert_results ='''
-                                    INSERT INTO product_retail_bands (
-                                    product_name,
-                                    market_id,
-                                    source_id,
-                                    currency_code,
-                                    date_price,
-                                    observed_price,
-                                    observed_class,
-                                    used_band_model,
-                                    date_run_model,
-                                    normal_band_limit,
-                                    stress_band_limit,
-                                    alert_band_limit
-                                    )
-                                    VALUES (
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s,
-                                        %s
-                                    );
-                '''
+            cursor.execute('''
+                            SELECT id
+                            FROM wholesale_prices
+                            WHERE product_name = %s
+                            AND market_id = %s
+                            AND source_id = %s
+                            AND currency_code = %s
+                            AND unit_scale = %s
+                            AND date_price = %s
+                            AND observed_price = %s
+                        ''', (product_name,market_id,source_id,currency_code,unit_scale,
+                        date_price, observed_price))
 
-                cursor.execute(query_insert_results, vector)
+            row_id = cursor.fetchall()
+
+            if row_id:
+
+                row_id = row_id[0][0]
+
+                cursor.execute('''
+                                UPDATE wholesale_prices
+                                SET observed_class = %s,
+                                class_method = %s,
+                                stressness = %s
+                                WHERE id = %s
+                ''', (observed_class, class_method, stressness, row_id))
 
                 connection.commit()
 
-            connection.close()
-        
-        else:
 
-            print('The combination:',product_name, market_id, source_id, currency_code, 'has problems.')
-            market_with_problems.append((product_name, market_id, source_id, currency_code))
+        connection.close()        
+
+ 
 
 
-        return market_with_problems
 
+        # except (Exception, psycopg2.Error) as error:
+        #     print('Error dropping the labels.')
+
+        # finally:
+
+        #     if (connection):
+        #         cursor.close()
+        #         connection.close()
 
 
 
